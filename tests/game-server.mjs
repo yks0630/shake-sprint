@@ -1,0 +1,146 @@
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync, readdirSync } from 'node:fs';
+import { build } from 'esbuild';
+
+// Run the actual request handlers against SQLite, with a D1-compatible adapter.
+const sqlite = new DatabaseSync(':memory:');
+let beforeWrite = async () => {};
+for (const file of readdirSync('drizzle').filter(f => f.endsWith('.sql')).sort()) sqlite.exec(readFileSync('drizzle/' + file, 'utf8').replaceAll('--> statement-breakpoint', ''));
+globalThis.__GAME_TEST_ENV__ = { DB: { prepare(sql) {
+  return { bind(...args) { return {
+    async first() { return sqlite.prepare(sql).get(...args) || null; },
+    async all() { return { results: sqlite.prepare(sql).all(...args) }; },
+    async run() { await beforeWrite(sql); return { meta: { changes: Number(sqlite.prepare(sql).run(...args).changes) } }; }
+  }; } };
+} } };
+const compiled = await build({ entryPoints: ['lib/game-server.ts'], bundle: true, write: false, platform: 'node', format: 'esm', plugins: [{ name: 'test-d1', setup(b) {
+  b.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'env', namespace: 'test-env' }));
+  b.onLoad({ filter: /.*/, namespace: 'test-env' }, () => ({ contents: 'export const env = globalThis.__GAME_TEST_ENV__;' }));
+} }] });
+const { action, snapshot } = await import('data:text/javascript;base64,' + Buffer.from(compiled.outputFiles[0].text).toString('base64'));
+let now = 1793750000000;
+const realNow = Date.now;
+Date.now = () => now;
+const request = (input = {}, token = '', origin = 'https://game.test') => new Request('https://game.test/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, Authorization: 'Bearer ' + token }, body: JSON.stringify(input) });
+const call = (room, name, data = {}, token = '') => action(request(data, token), room, name);
+const state = room => snapshot(room, new Request('https://game.test/api/rooms/' + room));
+let checks = 0;
+async function rejects(fn, status) { await assert.rejects(fn, e => e.status === status); checks++; }
+try {
+  const { code, hostToken } = await call('', 'create', { title: '计分测试' });
+  assert.match(code, /^[A-Z2-9]{6}$/); checks++;
+  await rejects(() => call(code, 'start', {}, hostToken), 409);
+  await rejects(() => call(code, 'join', { nickname: '' }), 400);
+  await rejects(() => action(request(null), code, 'join'), 400);
+  await rejects(() => action(request({}, '', 'https://evil.test'), code, 'join'), 403);
+  const people = await Promise.all(Array.from({ length: 137 }, (_, i) => call(code, 'join', { nickname: '选手' + i, character: i % 3 })));
+  assert.equal((await state(code)).count, 137); checks++;
+  await rejects(() => call(code, 'start', {}, 'wrong'), 403);
+  const start = await call(code, 'start', {}, hostToken);
+  assert.equal(start.startAt - now, 3000); checks++;
+  assert.equal(start.endAt - start.startAt, 40000); checks++;
+  assert.equal((await state(code)).stage, 'countdown'); checks++;
+  const score = (i, n, round = 1) => call(code, 'score', { id: people[i].id, round, shakes: n }, people[i].playerToken);
+  assert.equal((await score(0, 7)).accepted, false); checks++;
+  now = start.startAt - 1;
+  assert.equal((await score(0, 7)).accepted, false); checks++;
+  await rejects(() => call(code, 'join', { nickname: '晚到选手' }), 409);
+  await rejects(() => call(code, 'start', {}, hostToken), 409);
+  now = start.startAt + 10000;
+  assert.equal((await state(code)).stage, 'running'); checks++;
+  await score(0, 47); await score(0, 47); await score(0, 21);
+  assert.equal((await state(code)).players[0].shakes, 47); checks++;
+  const capped = await score(1, 1000000);
+  assert.equal(capped.shakes, 71); checks++;
+  await score(0, 71);
+  const ranked = await state(code);
+  assert.equal(ranked.players[0].rank, 1); assert.equal(ranked.players[1].rank, 1); assert.equal(ranked.players[2].rank, 3); checks++;
+  assert.ok(!JSON.stringify(ranked).includes(hostToken)); checks++;
+  const personal = await snapshot(code, new Request('https://game.test/api/rooms/' + code + '?player=' + people[0].id, { headers: { Authorization: 'Bearer ' + people[0].playerToken } }));
+  assert.equal(personal.me.shakes, 71); assert.equal(personal.me.rank, 1); assert.equal(personal.count, 137); assert.equal(personal.players.length, 0); checks++;
+  await rejects(() => call(code, 'score', { id: people[0].id, round: 1, shakes: 72 }, people[1].playerToken), 403);
+  await rejects(() => score(0, -1), 400);
+  await rejects(() => score(0, 4.3), 400);
+  await rejects(() => score(0, 73, 2), 409);
+  await rejects(() => call(code, 'next', {}, hostToken), 409);
+  now = start.endAt + 1000;
+  assert.equal((await state(code)).stage, 'finished'); checks++;
+  await score(0, 160);
+  await rejects(() => call(code, 'next', {}, hostToken), 409);
+  now = start.endAt + 2300;
+  assert.equal((await score(0, 200)).accepted, false); assert.equal((await state(code)).players[0].shakes, 160); checks++;
+  await call(code, 'next', {}, hostToken);
+  const next = await state(code);
+  assert.equal(next.round, 2); assert.equal(next.stage, 'lobby'); assert.equal(next.count, 137); assert.ok(next.players.every(p => p.shakes === 0)); checks++;
+  await rejects(() => score(0, 200, 1), 409);
+  const secondStart = await call(code, 'start', {}, hostToken); now = secondStart.startAt + 10000;
+  await Promise.all(people.map((_, i) => score(i, i % 69, 2)));
+  const loadState = await state(code);
+  assert.equal(loadState.count, 137); assert.equal(loadState.players[0].shakes, 68); assert.equal(loadState.players.at(-1).shakes, 0); checks++;
+  const raceRoom = await call('', 'create', { title: '并发边界' });
+  const racePlayer = await call(raceRoom.code, 'join', { nickname: '已入场' });
+  let releaseJoin, enterJoin;
+  const joinEntered = new Promise(resolve => { enterJoin = resolve; });
+  const joinReleased = new Promise(resolve => { releaseJoin = resolve; });
+  beforeWrite = async sql => { if (sql.startsWith('INSERT INTO players')) { enterJoin(); await joinReleased; } };
+  const joining = call(raceRoom.code, 'join', { nickname: '正在加入' });
+  await joinEntered;
+  const parallelStarts = await Promise.allSettled(Array.from({ length: 12 }, () => call(raceRoom.code, 'start', {}, raceRoom.hostToken)));
+  assert.equal(parallelStarts.filter(r => r.status === 'fulfilled').length, 1); checks++;
+  releaseJoin(); await rejects(() => joining, 409); beforeWrite = async () => {};
+  assert.equal((await state(raceRoom.code)).count, 1); checks++;
+  const raceSchedule = parallelStarts.find(r => r.status === 'fulfilled').value;
+  now = raceSchedule.endAt + 1000;
+  let releaseScore, enterScore;
+  const scoreEntered = new Promise(resolve => { enterScore = resolve; });
+  const scoreReleased = new Promise(resolve => { releaseScore = resolve; });
+  beforeWrite = async sql => { if (sql.startsWith('INSERT INTO scores')) { enterScore(); await scoreReleased; } };
+  const delayedScore = call(raceRoom.code, 'score', { id: racePlayer.id, round: 1, shakes: 100 }, racePlayer.playerToken);
+  await scoreEntered;
+  now = raceSchedule.endAt + 2300;
+  await Promise.all(Array.from({ length: 12 }, () => call(raceRoom.code, 'next', {}, raceRoom.hostToken)));
+  assert.equal((await state(raceRoom.code)).round, 2); checks++;
+  releaseScore(); await rejects(() => delayedScore, 409); beforeWrite = async () => {};
+  assert.equal((await state(raceRoom.code)).players[0].shakes, 0); checks++;
+  const readyRoom = await call('', 'create', { title: '准备同步' });
+  const readyPlayers = await Promise.all(['已开启', '尚未开启'].map(nickname => call(readyRoom.code, 'join', { nickname })));
+  const setReady = (ready, round = 1) => call(readyRoom.code, 'ready', { id: readyPlayers[0].id, ready, round }, readyPlayers[0].playerToken);
+  assert.equal((await state(readyRoom.code)).readyCount, 0); checks++;
+  await rejects(() => call(readyRoom.code, 'ready', { id: readyPlayers[0].id, ready: true, round: 1 }, readyPlayers[1].playerToken), 403);
+  await rejects(() => setReady('true'), 400);
+  await rejects(() => setReady(true, 2), 409);
+  assert.equal((await setReady(true)).accepted, true); checks++;
+  const readyState = await state(readyRoom.code);
+  assert.equal(readyState.count, 2); assert.equal(readyState.readyCount, 1); assert.equal(readyState.players.find(p => p.id === readyPlayers[0].id).ready, true); checks++;
+  const readyMe = await snapshot(readyRoom.code, new Request('https://game.test/api/rooms/' + readyRoom.code + '?player=' + readyPlayers[0].id, { headers: { Authorization: 'Bearer ' + readyPlayers[0].playerToken } }));
+  assert.equal(readyMe.me.ready, true); assert.equal(readyMe.readyCount, 1); checks++;
+  now += 10001; assert.equal((await state(readyRoom.code)).readyCount, 0); checks++;
+  await setReady(true); now += 2500; await setReady(true); now += 8000;
+  assert.equal((await state(readyRoom.code)).readyCount, 1); checks++;
+  await setReady(false); assert.equal((await state(readyRoom.code)).readyCount, 0); checks++;
+  await setReady(true);
+  const readyStart = await call(readyRoom.code, 'start', {}, readyRoom.hostToken);
+  assert.equal((await setReady(false)).accepted, false); checks++;
+  now = readyStart.endAt + 2300;
+  await call(readyRoom.code, 'next', {}, readyRoom.hostToken);
+  assert.equal((await state(readyRoom.code)).readyCount, 0); checks++;
+  await rejects(() => setReady(true, 1), 409);
+  await setReady(true, 2); assert.equal((await state(readyRoom.code)).readyCount, 1); checks++;
+  // A lobby heartbeat delayed until after start cannot mutate preparation.
+  await call(readyRoom.code, 'start', {}, readyRoom.hostToken);
+  assert.equal((await setReady(false, 2)).accepted, false); checks++;
+  // Pause a genuine lobby heartbeat at the database boundary, then start.
+  const boundaryRoom = await call('', 'create', { title: '准备与开赛竞争' });
+  const boundaryPlayer = await call(boundaryRoom.code, 'join', { nickname: '选手' });
+  let enterReady, releaseReady;
+  const readyEntered = new Promise(resolve => { enterReady = resolve; });
+  const readyReleased = new Promise(resolve => { releaseReady = resolve; });
+  beforeWrite = async sql => { if (sql.startsWith('INSERT INTO player_readiness')) { enterReady(); await readyReleased; } };
+  const pendingReady = call(boundaryRoom.code, 'ready', { id: boundaryPlayer.id, ready: true, round: 1 }, boundaryPlayer.playerToken);
+  await readyEntered; const boundaryStart = await call(boundaryRoom.code, 'start', {}, boundaryRoom.hostToken);
+  releaseReady(); assert.equal((await pendingReady).accepted, false); checks++;
+  beforeWrite = async () => {};
+  assert.equal((await state(boundaryRoom.code)).readyCount, 0); checks++;
+  console.log(JSON.stringify({ checks, participants: people.length, result: 'passed', covers: ['40s duration', 'dynamic participant count', 'authorization', 'idempotent cumulative scoring', 'ties', 'late upload grace', 'round reset', 'old-round rejection', '137 simultaneous score submissions'] }));
+} finally { Date.now = realNow; sqlite.close(); delete globalThis.__GAME_TEST_ENV__; }
