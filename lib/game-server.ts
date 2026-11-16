@@ -27,8 +27,12 @@ export async function body(request: Request) {
   try { const value = JSON.parse(raw); if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object"); return value as Record<string, unknown>; } catch { throw new GameError(400, "请求内容无效"); }
 }
 export function bearer(request: Request) { return request.headers.get("authorization")?.replace(/^Bearer /, "") || ""; }
-export async function host(request: Request, game: GameRow) {
-  if (await hash(bearer(request)) !== game.host_hash) throw new GameError(403, "需要主持人权限，请使用创建比赛的设备");
+// Only the separate management service receives this key. Legacy room tokens
+// deliberately no longer authorize management operations.
+export async function management(request: Request) {
+  const key = env.ADMIN_SERVICE_KEY;
+  if (typeof key !== "string" || key.length < 32) throw new GameError(503, "管理服务尚未配置");
+  if (await hash(bearer(request)) !== await hash(key)) throw new GameError(403, "仅管理后台可以操作比赛");
 }
 export async function participant(request: Request, game: GameRow, id: unknown) {
   if (typeof id !== "string") throw new GameError(400, "选手信息无效");
@@ -59,11 +63,12 @@ export async function snapshot(code: string, request: Request) {
 export async function action(request: Request, code: string, name: string) {
   const input = await body(request);
   if (name === "create") {
+    await management(request);
     const title = typeof input.title === "string" ? input.title.trim().slice(0, 30) : "一起摇 · 现场运动会";
     const hostToken = token(); const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const room = Array.from(crypto.getRandomValues(new Uint8Array(6)), n => alphabet[n % alphabet.length]).join("");
     await db().prepare("INSERT INTO games (code, title, host_hash, round, status, created_at) VALUES (?, ?, ?, 1, 'lobby', ?)").bind(room, title || "一起摇 · 现场运动会", await hash(hostToken), Date.now()).run();
-    return { code: room, hostToken };
+    return { code: room };
   }
   const game = await gameFor(code);
   if (name === "join") {
@@ -104,7 +109,7 @@ export async function action(request: Request, code: string, name: string) {
     if (!result.meta.changes) throw new GameError(409, "已进入新一局，本局成绩不再接收");
     return { accepted: true, shakes: bounded };
   }
-  await host(request, game);
+  await management(request);
   if (name === "start") {
     if (stage(game) !== "lobby") throw new GameError(409, "本局已开始");
     const count = await db().prepare("SELECT COUNT(*) AS n FROM players WHERE room = ?").bind(game.code).first<{ n: number }>();

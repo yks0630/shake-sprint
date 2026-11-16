@@ -4,7 +4,7 @@ import QRCode from "qrcode";
 import { ArrowRight, Check, ChevronLeft, ChevronRight, Copy, Expand, Flag, LoaderCircle, Play, RotateCcw, Smartphone, Timer, Trophy, Users } from "lucide-react";
 import { CHARACTERS, COUNTDOWN, READY_HEARTBEAT, scoreLimit, type GameState } from "@/lib/game-types";
 import { ShakeDetector } from "@/lib/shake-detector";
-type View = "home" | "host" | "screen" | "play" | "demo";
+type View = "home" | "screen" | "play" | "demo";
 type Session = { id: string; playerToken: string };
 const names = ["小满", "追风的阿乐", "橘子汽水", "好运来", "小林同学", "一颗丸子", "阳光选手", "加油鸭", "向前跑", "闪电小周", "元气满满", "快乐小陈", "星星", "大步向前", "小叶", "最佳拍档", "好运选手", "小太阳"];
 const roleNames = ["元气选手", "追风选手", "冒险选手"];
@@ -68,30 +68,26 @@ function Qr({ value }: { value: string }) {
   return src ? <img className="qr" src={src} alt="微信扫码加入本场比赛" /> : <div className="qr qr-loading"><LoaderCircle className="spin" /></div>;
 }
 function Home() {
-  const [mode, setMode] = useState<"create" | "join">("create"), [title, setTitle] = useState("摇一摇运动会"), [code, setCode] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [lastRoom, setLastRoom] = useState("");
-  useEffect(() => { setLastRoom(stored("last-host-room") || ""); }, []);
-  async function submit(e: React.FormEvent) {
-    e.preventDefault(); setError("");
-    if (mode === "join") { if (code.trim().length !== 6) { setError("请输入 6 位房间号"); return; } location.href = "/play/" + code.trim().toUpperCase(); return; }
-    setBusy(true);
-    try { if (!remember("race-storage-check", "1")) throw new Error("浏览器无法保存主持人凭证，请允许网站存储后重试。"); forget("race-storage-check"); const r = await api<{ code: string; hostToken: string }>("/api/rooms", { title }); if (!remember("host-" + r.code, r.hostToken)) throw new Error("主持人凭证未能保存，请允许网站存储后重新创建。"); remember("last-host-room", r.code); location.href = "/host/" + r.code; }
-    catch (e) { setError((e as Error).message); setBusy(false); }
+  const [code, setCode] = useState(""), [error, setError] = useState("");
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!/^[A-Z2-9]{6}$/.test(code.trim().toUpperCase())) { setError("请输入大屏上的 6 位房间号"); return; }
+    location.href = "/play/" + code.trim().toUpperCase();
   }
   return <div className="home"><header className="site-header"><Logo /><a className="button secondary" href="/demo">试玩</a></header>
     <main className="home-main"><div className="game-title"><h1>摇一摇赛跑</h1><p>多人同场 · 每局 40 秒</p></div>
     <section className="menu-stage"><div className="menu-runner runner-left"><Character choice={1} pose="cheer1" /></div><div className="menu-runner runner-right"><Character choice={0} pose="cheer1" /></div>
-      <div className="entry-card"><h2 className="ribbon-title">进入比赛</h2><div className="entry-tabs"><button className={mode === "create" ? "selected" : ""} onClick={() => { setMode("create"); setError(""); }}>主持人</button><button className={mode === "join" ? "selected" : ""} onClick={() => { setMode("join"); setError(""); }}>手机参赛</button></div>
-      <form onSubmit={submit}><label htmlFor="entry-input">{mode === "create" ? "比赛名称" : "房间号"}</label><input id="entry-input" value={mode === "create" ? title : code} onChange={e => mode === "create" ? setTitle(e.target.value) : setCode(e.target.value.toUpperCase())} maxLength={mode === "create" ? 30 : 6} placeholder={mode === "create" ? "输入比赛名称" : "输入大屏上的 6 位房间号"} required autoComplete="off" /><button className="button primary full-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={19} /> : mode === "create" ? "创建比赛" : "加入比赛"}</button><p className="form-hint">{mode === "create" ? "创建后展示二维码，由主持人统一开赛。" : "也可以直接扫描大屏上的二维码加入。"}</p>{error && <p className="error" role="alert">{error}</p>}</form>
-      {lastRoom && mode === "create" && <a className="resume-link" href={"/host/" + lastRoom}>继续上一场 · {lastRoom}</a>}</div>
+      <div className="entry-card"><h2 className="ribbon-title">手机参赛</h2>
+      <form onSubmit={submit}><label htmlFor="entry-input">房间号</label><input id="entry-input" value={code} onChange={e => setCode(e.target.value.toUpperCase())} maxLength={6} placeholder="输入大屏上的 6 位房间号" required autoComplete="off" /><button className="button primary full-button">加入比赛</button><p className="form-hint">也可以直接扫描大屏上的二维码加入。</p>{error && <p className="error" role="alert">{error}</p>}</form></div>
     </section></main><footer className="site-footer"><span>摇得越多，跑得越远</span><a href="/credits" target="_blank" rel="noreferrer">素材来源</a></footer></div>;
 }
 export default function GameClient({ view = "home", code = "" }: { view?: View; code?: string }) {
-  const [data, setData] = useState<GameState | null>(null), [error, setError] = useState(""), [connectionError, setConnectionError] = useState(""), [session, setSession] = useState<Session | null>(null), [hostToken, setHostToken] = useState(""), [initialized, setInitialized] = useState(false), [busy, setBusy] = useState(false), [clock, setClock] = useState(Date.now());
+  const [data, setData] = useState<GameState | null>(null), [error, setError] = useState(""), [connectionError, setConnectionError] = useState(""), [session, setSession] = useState<Session | null>(null), [initialized, setInitialized] = useState(false), [busy, setBusy] = useState(false), [clock, setClock] = useState(Date.now());
   const serverClock = useRef<{ server: number; at: number } | null>(null), refreshSequence = useRef(0), observedStage = useRef<GameState["stage"]>("lobby");
   const getNow = useCallback(() => { const anchor = serverClock.current; return anchor ? anchor.server + performance.now() - anchor.at : Date.now(); }, []);
   const [demoStart, setDemoStart] = useState<number | null>(null), [demoPhone, setDemoPhone] = useState(false), [demoRound, setDemoRound] = useState(1), [demoBoost, setDemoBoost] = useState(0);
   const isDemo = view === "demo", isPhone = view === "play" || (isDemo && demoPhone);
-  useEffect(() => { if (view === "home") return; setSession(playerSession(code)); setHostToken(stored("host-" + code) || ""); setInitialized(true); }, [code, view]);
+  useEffect(() => { if (view === "home") return; setSession(playerSession(code)); setInitialized(true); }, [code, view]);
   useEffect(() => { const t = setInterval(() => setClock(getNow()), 100); return () => clearInterval(t); }, [getNow]);
   const refresh = useCallback(async () => {
     if (!code || isDemo) return; const before = performance.now(), sequence = ++refreshSequence.current;
@@ -121,14 +117,14 @@ export default function GameClient({ view = "home", code = "" }: { view?: View; 
   const d: GameState | null = data ? { ...data, stage: data.startAt && data.endAt ? clock < data.startAt ? "countdown" : clock < data.endAt ? "running" : "finished" : "lobby" } : null;
   async function control(action: "start" | "next") {
     setBusy(true); setError("");
-    try { if (isDemo) { if (action === "start") setDemoStart(Date.now() + COUNTDOWN); else { setDemoStart(null); setDemoBoost(0); setDemoRound(v => v + 1); } } else { await api("/api/rooms/" + code + "/" + action, {}, hostToken); await refresh(); } }
+    try { if (isDemo) { if (action === "start") setDemoStart(Date.now() + COUNTDOWN); else { setDemoStart(null); setDemoBoost(0); setDemoRound(v => v + 1); } } else { throw new Error("请使用独立管理后台操作比赛"); } }
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   if (view === "home") return <Home />;
   const visibleError = connectionError || error;
   if (!d) return <div className="loading-page"><Logo />{visibleError ? <><h1>暂时无法进入比赛</h1><p className="error" role="alert">{visibleError}</p><a href="/" className="button primary">回到首页</a></> : <><LoaderCircle className="spin" size={30} /><p>正在连接运动场…</p></>}</div>;
-  return <div className={isPhone ? "phone-shell" : "board-shell" + (view === "host" || isDemo ? " host-shell" : "")}>{isDemo && <div className="demo-banner"><span>效果演示 · 模拟选手与成绩</span><button onClick={() => setDemoPhone(v => !v)}><Smartphone size={14} />{demoPhone ? "看大屏效果" : "看手机效果"}</button><a href="/">创建真实比赛<ArrowRight size={14} /></a></div>}
-    {isPhone ? <Phone data={d} clock={clock} getNow={getNow} session={session} setSession={setSession} error={visibleError} setError={setError} isDemo={isDemo} onDemoShake={() => setDemoBoost(v => v + 1)} refresh={refresh} /> : <Board data={d} clock={clock} isHost={view === "host" || isDemo} isDemo={isDemo} hasToken={!!hostToken || isDemo} busy={busy} control={control} error={visibleError} />}</div>;
+  return <div className={isPhone ? "phone-shell" : "board-shell" + (isDemo ? " host-shell" : "")}>{isDemo && <div className="demo-banner"><span>效果演示 · 模拟选手与成绩</span><button onClick={() => setDemoPhone(v => !v)}><Smartphone size={14} />{demoPhone ? "看大屏效果" : "看手机效果"}</button><a href="/">进入真实比赛<ArrowRight size={14} /></a></div>}
+    {isPhone ? <Phone data={d} clock={clock} getNow={getNow} session={session} setSession={setSession} error={visibleError} setError={setError} isDemo={isDemo} onDemoShake={() => setDemoBoost(v => v + 1)} refresh={refresh} /> : <Board data={d} clock={clock} isHost={isDemo} isDemo={isDemo} hasToken={isDemo} busy={busy} control={control} error={visibleError} />}</div>;
 }
 export function Board({ data: d, clock, isHost, isDemo, hasToken, busy, control, error, preview = false }: { data: GameState; clock: number; isHost: boolean; isDemo: boolean; hasToken: boolean; busy: boolean; control: (a: "start" | "next") => void; error: string; preview?: boolean }) {
   const [origin, setOrigin] = useState(""), [page, setPage] = useState(0), [copied, setCopied] = useState(false), [notice, setNotice] = useState(""), [shortScreen, setShortScreen] = useState(false);

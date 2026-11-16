@@ -7,7 +7,8 @@ import { build } from 'esbuild';
 const sqlite = new DatabaseSync(':memory:');
 let beforeWrite = async () => {};
 for (const file of readdirSync('drizzle').filter(f => f.endsWith('.sql')).sort()) sqlite.exec(readFileSync('drizzle/' + file, 'utf8').replaceAll('--> statement-breakpoint', ''));
-globalThis.__GAME_TEST_ENV__ = { DB: { prepare(sql) {
+const serviceKey = 'test-management-service-key-32-characters';
+globalThis.__GAME_TEST_ENV__ = { ADMIN_SERVICE_KEY: serviceKey, DB: { prepare(sql) {
   return { bind(...args) { return {
     async first() { return sqlite.prepare(sql).get(...args) || null; },
     async all() { return { results: sqlite.prepare(sql).all(...args) }; },
@@ -23,11 +24,15 @@ let now = 1793750000000;
 const realNow = Date.now;
 Date.now = () => now;
 const request = (input = {}, token = '', origin = 'https://game.test') => new Request('https://game.test/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, Authorization: 'Bearer ' + token }, body: JSON.stringify(input) });
-const call = (room, name, data = {}, token = '') => action(request(data, token), room, name);
+const call = async (room, name, data = {}, token = '') => {
+  const result = await action(request(data, name === 'create' ? serviceKey : token), room, name);
+  return name === 'create' ? { ...result, hostToken: serviceKey } : result;
+};
 const state = room => snapshot(room, new Request('https://game.test/api/rooms/' + room));
 let checks = 0;
 async function rejects(fn, status) { await assert.rejects(fn, e => e.status === status); checks++; }
 try {
+  await rejects(() => action(request({}), '', 'create'), 403);
   const { code, hostToken } = await call('', 'create', { title: '计分测试' });
   assert.match(code, /^[A-Z2-9]{6}$/); checks++;
   await rejects(() => call(code, 'start', {}, hostToken), 409);
@@ -37,6 +42,12 @@ try {
   const people = await Promise.all(Array.from({ length: 137 }, (_, i) => call(code, 'join', { nickname: '选手' + i, character: i % 3 })));
   assert.equal((await state(code)).count, 137); checks++;
   await rejects(() => call(code, 'start', {}, 'wrong'), 403);
+  const legacyToken = 'legacy-room-host-token';
+  sqlite.prepare('UPDATE games SET host_hash = ? WHERE code = ?').run(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(legacyToken)).then(b => Buffer.from(b).toString('hex')), code);
+  await rejects(() => call(code, 'start', {}, legacyToken), 403);
+  await rejects(() => action(request({}, people[0].playerToken), '', 'create'), 403);
+  await rejects(() => call(code, 'start', {}, people[0].playerToken), 403);
+  await rejects(() => call(code, 'next', {}, people[0].playerToken), 403);
   const start = await call(code, 'start', {}, hostToken);
   assert.equal(start.startAt - now, 3000); checks++;
   assert.equal(start.endAt - start.startAt, 40000); checks++;

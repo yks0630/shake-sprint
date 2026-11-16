@@ -13,7 +13,9 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "check": "tsc --noEmit",
-    "test": "node tests/game-server.mjs && node tests/client.mjs && node tests/shake-detector.mjs",
+    "admin": "node --env-file-if-exists=.env.admin admin/server.mjs",
+    "test:admin": "node tests/admin.mjs",
+    "test": "node tests/admin.mjs && node tests/game-server.mjs && node tests/client.mjs && node tests/shake-detector.mjs",
     "preview:offline": "node scripts/offline-preview.mjs ../shake-sprint-preview.html"
   },
   "dependencies": {

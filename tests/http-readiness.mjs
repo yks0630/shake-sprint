@@ -1,3 +1,5 @@
+const managementKey = process.env.ADMIN_SERVICE_KEY;
+if (!managementKey || managementKey.length < 32) throw new Error('Set ADMIN_SERVICE_KEY for trusted load testing');
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 
@@ -12,7 +14,8 @@ async function call(path, input, token, status = 200) {
   assert.equal(response.status, status, 'unexpected HTTP status for ' + path); checks++;
   return response.json();
 }
-const room = await call('/api/rooms', { title: '准备同步接口验收' });
+const room = await call('/api/rooms', { title: '准备同步接口验收' }, managementKey);
+room.hostToken = managementKey;
 const path = '/api/rooms/' + room.code;
 const players = [];
 for (let i = 0; i < 16; i++) players.push(await call(path + '/join', { nickname: '准备测试' + (i + 1), character: i % 3 }));
