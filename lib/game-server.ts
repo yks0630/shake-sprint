@@ -60,6 +60,26 @@ export async function snapshot(code: string, request: Request) {
   const { results } = await db().prepare(select + " ORDER BY shakes DESC, p.joined_at, p.id").bind(...args).all<{ ready: number }>();
   return { ...base, count: results.length, readyCount: results.filter(p => p.ready).length, players: results.map(p => ({ ...p, ready: !!p.ready })) };
 }
+export async function history(code: string, request: Request) {
+  await management(request);
+  const game = await gameFor(code), now = Date.now();
+  // Only expose finalized rounds, after the score upload grace and settlement.
+  const { results: rounds } = await db().prepare("SELECT round, start_at AS startAt, end_at AS endAt, json_array_length(roster_json) AS count FROM game_rounds WHERE room = ? AND end_at + 2200 <= ? ORDER BY round DESC").bind(game.code, now).all<{ round: number }>();
+  const value = new URL(request.url).searchParams.get("round");
+  const selectedRound = value === null ? rounds[0]?.round : Number(value);
+  if (value !== null && (!Number.isSafeInteger(selectedRound) || !selectedRound || selectedRound < 1)) throw new GameError(400, "局数无效");
+  if (selectedRound === undefined) return { code: game.code, title: game.title, rounds, selectedRound: null, players: [] };
+  if (!rounds.some(r => r.round === selectedRound)) throw new GameError(404, "本局尚未完成结算或没有历史记录");
+  const { results: players } = await db().prepare(`SELECT json_extract(p.value, '$.id') AS id,
+    json_extract(p.value, '$.nickname') AS nickname, json_extract(p.value, '$.character') AS character,
+    COALESCE(s.shakes, 0) AS shakes,
+    RANK() OVER (ORDER BY COALESCE(s.shakes, 0) DESC) AS rank
+    FROM game_rounds r, json_each(r.roster_json) p
+    LEFT JOIN scores s ON s.player_id = json_extract(p.value, '$.id') AND s.round = r.round
+    WHERE r.room = ? AND r.round = ? ORDER BY shakes DESC, CAST(p.key AS INTEGER)`)
+    .bind(game.code, selectedRound).all();
+  return { code: game.code, title: game.title, rounds, selectedRound, players };
+}
 export async function action(request: Request, code: string, name: string) {
   const input = await body(request);
   if (name === "create") {

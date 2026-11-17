@@ -46,7 +46,7 @@ export default function ReviewClient() {
   if (!frameOnly) {
     const source = '/review?frame=1&view=' + view + (joined ? '' : '&entry=1') + (epoch ? '&start=' + epoch : '');
     return <div className={styles.review}>
-      <header className={styles.toolbar}><div className={styles.topline}><strong>六页界面评审</strong><span>示例数据 · 86 人 · 二维码不用于真实入场</span></div>
+      <header className={styles.toolbar}><div className={styles.topline}><strong>游戏界面评审</strong><a href="/review/gallery">查看全部页面总览 ↗</a><span>示例数据 · 86 人 · 二维码不用于真实入场</span></div>
         <nav className={styles.tabs} aria-label="切换手机和大屏的六个页面">{pages.map(([key, label]) => <button key={key} type="button" aria-pressed={view === key} onClick={() => choose(key)}>{label}</button>)}</nav>
         <div className={styles.actions}>{view === 'phone-ready' && <button type="button" onClick={() => setJoined(v => !v)}>{joined ? '查看昵称入场页' : '查看已加入状态'}</button>}<button type="button" onClick={() => { setView(isPhone ? 'phone-race' : 'screen-race'); setEpoch(Date.now()); }}>演示 3 秒开赛</button><span>{title}</span></div>
       </header>
@@ -54,8 +54,8 @@ export default function ReviewClient() {
     </div>;
   }
   const state = fixture(view, epoch, clock, frozenCountdown);
-  return <div data-review-scene={view} className={(isPhone ? 'phone-shell ' : 'board-shell host-shell ')}>
+  return <div data-review-scene={view} className={(isPhone ? 'phone-shell ' : 'board-shell ')}>
     {isPhone ? <Phone key={view} preview data={state.data} clock={state.clock} getNow={getNow} session={joined ? participant : null} setSession={() => setJoined(true)} error="" setError={() => {}} isDemo={false} onDemoShake={() => {}} refresh={async () => {}} />
-      : <Board preview data={state.data} clock={state.clock} isHost={!isPhone} isDemo hasToken busy={false} error="" control={action => { setEpoch(action === 'start' ? Date.now() : 0); if (action === 'next') setView('screen-ready'); }} />}
+      : <Board preview data={state.data} clock={state.clock} isHost={false} isDemo hasToken busy={false} error="" control={action => { setEpoch(action === 'start' ? Date.now() : 0); if (action === 'next') setView('screen-ready'); }} />}
   </div>;
 }

@@ -19,3 +19,9 @@ export const readiness = sqliteTable("player_readiness", {
   round: integer("round").notNull(), ready: integer("ready").notNull().default(0),
   updatedAt: integer("updated_at").notNull(),
 });
+
+export const gameRounds = sqliteTable("game_rounds", {
+  room: text("room").notNull().references(() => games.code),
+  round: integer("round").notNull(), startAt: integer("start_at").notNull(),
+  endAt: integer("end_at").notNull(), rosterJson: text("roster_json").notNull(),
+}, t => [primaryKey({ columns: [t.room, t.round] })]);

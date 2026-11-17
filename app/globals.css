@@ -86,3 +86,5 @@
 /* Text-only readiness indicators reuse the existing leaderboard rows. */
 .rank-row>strong .readiness-status{font-size:12px;font-weight:700;color:#72502d;margin:0}
 .rank-row>strong .readiness-status.is-ready{color:#39720b}
+
+@media (min-width:701px){.board-header{display:grid;grid-template-columns:1fr 2fr 1fr}.board-header .event-name{max-width:100%}}
